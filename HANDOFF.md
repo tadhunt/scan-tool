@@ -200,29 +200,37 @@ patches; ScanSnap suppresses these to white.
   range. Current gate = MODE DOMINANCE (raw domain, on the crop):
   fraction of crop pixels in the single largest 8-unit bright bucket.
   FINAL GATE (after several failed attempts — history below): whiten
-  only what the scanner provably tinted. Auto per page, both required:
+  only what the scanner provably tinted. Auto per page, ALL required:
   (1) dom>=40: share of crop pixels within 12 units of the dominant
-  bright color — uniform paper 61-84%, patterned check fronts <=38.5
-  except near-solid Wilmington 56.3 (caught by 2);
-  (2) artifact-strength blue: B-R>=20 AND B-G>=12 of the paper mode —
-  brightener fluorescence measured B-R 24.6-32.9 / B-G 16.4-24.7;
-  every corpus check fails (pale-blue Wilmington B-R 16.5, teal
-  Peachtree B-R 41 but B-G 8.2), warm stock negative, neutral white
-  paper fails (nothing to remove — stays untouched, tone level
-  already brightens it).
-  Every check fails BOTH signals except Wilmington (fails 2 only)
-  and Peachtree (fails both narrowly: dom 38.5, B-G 8.2).
+  bright bucket (docs 57-85, most check fronts below);
+  (2) artifact-signature blue on the PRECISE neighborhood-mean paper
+  color (never the quantized mode — an 8-unit bucket shift between
+  feeds jumps B-G by 8.2 in one step; that instability whitened
+  Peachtree on the checks-v7 rescan after passing the first corpus):
+  B-R>=23, B-G>=15, G-R<=12. Measured: docs B-R>=25.9 B-G>=18.9
+  G-R<=9.2; Wilmington blue-gray (closest stock) B-R<=21.3
+  B-G<=11.9 — once survived by 0.1; teal Peachtree G-R 33.8-34.6;
+  warm stock negative; neutral white fails (nothing to remove).
+  (3) crop short side >=1500px: checks are physically <=4.25"
+  (<=1275px @300dpi), letter docs >=2544px — an orthogonal physical
+  blocker for the whole check class even if colors drift. Small
+  blue-paper scraps keep their tint (safe direction).
   USER REQUIREMENTS (hard): no flags in normal use — mixed batches
   (sizes, colors, checks together) must auto-work like ScanSnap;
   real paper colors (pink/yellow/cream/check stock) must survive.
-  Verified: corpus all-off = bit-identical to validated v7 (votes,
-  bodysat stable); s4 all-on, user-rated "even better than scansnap".
+  Verified on THREE corpora: v5 checks all-off (votes/bodysat
+  stable), checks-v7 rescan all-off (raws in work/scansnap_lPC4th,
+  outputs checks-v7-fixed.pdf), s4 docs all-on (user-rated "even
+  better than scansnap"). Rescans shift measurements by ±1-2 units
+  (Wilmington B-R 19.6->21.3, Peachtree dom 37.5->43.3 across
+  feeds) — any future threshold must clear that jitter band.
   FAILED GATES (do not retry): HSL saturation (explodes near white
   — shipped the s4 blue mess by gating OFF the pages needing help);
-  single-bucket dominance (thin 10.7/15/17.2 margins, noise-fragile);
-  12-unit-neighborhood dominance alone (Wilmington 56.3 would
-  bleach); texture/high-pass energy (text-edge halos on dense doc
-  pages overlap engraved-pattern energy: 7.04 vs 5.40).
+  single-bucket dominance (noise-fragile); neighborhood dominance
+  alone (Wilmington would bleach); texture/high-pass energy
+  (text-edge halos on dense doc pages overlap engraved patterns);
+  gating on quantized mode color (feed-unstable — the Peachtree
+  whitening bug).
   `--no-whiten` / `--whiten` / SCAN_NORM=off|on exist as emergency
   overrides only — the user should never need them.
 

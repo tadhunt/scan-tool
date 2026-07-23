@@ -286,42 +286,58 @@ process_page() {
   #    front patterns ≤~12%. Threshold 15%. SCAN_NORM=off|on overrides
   #    (--color / --white flags).
   # dom = share of crop pixels within 12 units (per channel) of the
-  # dominant bright color — the mode's whole neighborhood, not one
-  # quantization bucket, so uniform paper isn't split by noise.
+  # dominant bright color; PR,PG,PB = the UNQUANTIZED mean color of
+  # those pixels. The coarse 8-unit mode bucket only LOCATES the
+  # paper — gating on the bucket's own color was feed-unstable (a
+  # one-bucket shift jumps B-G by 8.2 in one step; that's how a
+  # rescan pushed Peachtree over the line). The neighborhood mean is
+  # continuous and stable across feeds.
   local dom PR PG PB paper="" norm=""
   read -r dom PR PG PB <<< "$(magick "stage_${base}.png" \
-        -crop "${CW}x${CH}+${x0}+${y0}" +repage -scale 25% -depth 5 \
+        -crop "${CW}x${CH}+${x0}+${y0}" +repage -scale 25% \
         -format %c histogram:info: | \
       awk -F'[(,)]' -v minl=$((bglum+8)) \
-        '{c[NR]=$1+0; tot+=c[NR]; r[NR]=$2+0; g[NR]=$3+0; b[NR]=$4+0
-          l=.299*r[NR]+.587*g[NR]+.114*b[NR]
-          if(l>=minl && c[NR]>best){best=c[NR]; m=NR}}
-         END{if(!m){print "0 0 0 0"; exit}
-             for(i=1;i<=NR;i++){
-               dr=r[i]-r[m]; if(dr<0)dr=-dr
-               dg=g[i]-g[m]; if(dg<0)dg=-dg
-               db=b[i]-b[m]; if(db<0)db=-db
-               if(dr<=12 && dg<=12 && db<=12) near+=c[i]}
-             printf "%.1f %.1f %.1f %.1f", near*100/tot, r[m], g[m], b[m]}')"
+        '{n++; C[n]=$1+0; R[n]=$2+0; G[n]=$3+0; B[n]=$4+0; tot+=C[n]
+          l=.299*R[n]+.587*G[n]+.114*B[n]
+          if(l>=minl){k=int(R[n]/8)","int(G[n]/8)","int(B[n]/8); H[k]+=C[n]
+            if(H[k]>best){best=H[k]; bk=k}}}
+         END{if(!best){print "0 0 0 0"; exit}
+             split(bk,K,","); cr=K[1]*8+4; cg=K[2]*8+4; cb=K[3]*8+4
+             for(i=1;i<=n;i++){
+               dr=R[i]-cr; if(dr<0)dr=-dr
+               dg=G[i]-cg; if(dg<0)dg=-dg
+               db=B[i]-cb; if(db<0)db=-db
+               if(dr<=12 && dg<=12 && db<=12){
+                 near+=C[i]; sr+=R[i]*C[i]; sg+=G[i]*C[i]; sb+=B[i]*C[i]}}
+             printf "%.1f %.1f %.1f %.1f", near*100/tot, sr/near, sg/near, sb/near}')"
   # Auto mode: whiten ONLY what the scanner itself provably tinted.
   # Two per-page conditions, both required:
   #   1. uniform paper: dom >= 40 (patterned check fronts reach 25.5
   #      at most — except Wilmington's near-solid stock, caught by 2);
-  #   2. artifact-strength blue cast: B-R >= 20 AND B-G >= 12. Optical
-  #      brightener fluorescence is STRONG and blue-not-teal (measured
-  #      docs B-R 24.6-32.9, B-G 16.4-24.7); every corpus check fails
-  #      at least one (pale-blue Wilmington B-R 16.5; teal Peachtree
-  #      B-R 41 but B-G 8.2), warm stock (pink/yellow/cream) is
-  #      negative, and neutral white paper fails too — no artifact,
-  #      nothing to remove. (Texture gating was tried and dropped:
-  #      text-edge halos on dense doc pages overlap engraved-pattern
-  #      energy.)
+  #   2. artifact-signature blue cast: B-R >= 23 AND B-G >= 15 AND
+  #      G-R <= 12, thresholds centered in the measured gaps (docs
+  #      B-R >= 25.9, B-G >= 18.9, G-R <= 9.2 across feeds; the
+  #      closest check stock: Wilmington blue-gray B-R <= 21.3,
+  #      B-G <= 11.9; teal Peachtree G-R 33.8-34.6 — feed-to-feed
+  #      drift is ~±1-2 units, so gate on the precise neighborhood-
+  #      mean color, never the quantized mode). Warm stock (pink/
+  #      yellow/cream) is negative; neutral white paper fails too —
+  #      no artifact, nothing to remove.
+  #   3. document-sized page: crop short side >= 1500px (5"). Checks
+  #      are physically <= 4.25" short-side (<= 1275px @300dpi);
+  #      letter/A4 docs are >= 2544px. A small blue-paper scrap
+  #      keeps its tint — the safe direction. Gives every check an
+  #      independent blocker even if its colors drift.
+  #      (Texture gating was tried and dropped: text-edge halos on
+  #      dense doc pages overlap engraved-pattern energy.)
   # Both signals are per-page; mixed batches need no flags.
   case "${SCAN_NORM:-auto}" in
     on)   paper=1;;
     off)  paper="";;
     *)    awk -v d="$dom" -v r="$PR" -v g="$PG" -v b="$PB" \
-            'BEGIN{exit !(d>=40 && r>0 && b-r>=20 && b-g>=12)}' && paper=1;;
+            -v cw="$CW" -v ch="$CH" \
+            'BEGIN{s=(cw<ch)?cw:ch
+                   exit !(d>=40 && r>0 && b-r>=23 && b-g>=15 && g-r<=12 && s>=1500)}' && paper=1;;
   esac
   [ -n "$paper" ] && [ "$PR" != "0" ] && norm=$(awk -v r="$PR" -v g="$PG" -v b="$PB" 'BEGIN{
       printf "-channel R -level 0%%,%.1f%% +channel", r/2.55
