@@ -345,13 +345,29 @@ process_page() {
       printf " -channel B -level 0%%,%.1f%% +channel", b/2.55}')
   [ -n "$DEBUG" ] && \
     echo "DEBUG ${base}: dom $dom paper $PR,$PG,$PB norm $([ -n "$norm" ] && echo on || echo off)" >&2
-  local bgcolor="rgb($bg)"
+  #    Tone here differs from $filter (which feeds the orientation-
+  #    scoring image and must stay byte-stable): calibrated against
+  #    the ScanSnap reference (work/debug.sh sscmp + tonecal).
+  #    Brightening happens on the LAB L channel only — a plain RGB
+  #    -level stretch amplifies channel differences, i.e. saturation
+  #    (user: colors "way more intense than scansnap"). The mid-lift
+  #    comes from GAMMA (1.75) with a high white point (90%), NOT a
+  #    low white point: a hard white clip at 80% matched SS's means
+  #    but crushed everything paler than that — pale check stock and
+  #    the backs' security print went illegible (user-caught).
+  #    Soft-shouldered gamma + -modulate 100,82 lands within ~6 of
+  #    SS's body means AND keeps pattern std (backs ~7-16 vs 3.6
+  #    crushed). FINAL_FILTER overrides (main sets it for --clean).
+  local FTONE='-colorspace LAB -channel R -level 3%,90%,1.75 +channel -colorspace sRGB -modulate 100,82 -unsharp 0x1+0.6+0.02'
+  local bgcolor="rgb($bg)" cropdbg=""
+  [ -n "$DEBUG" ] && cropdbg="-write crop_${base}.png"
   eval magick \"stage_${base}.png\" \
        -crop "${CW}x${CH}+${x0}+${y0}" +repage -shave 4x4 \
        -fuzz 4% -fill white -opaque \"\$bgcolor\" \
        $norm \
+       $cropdbg \
        -colorspace sRGB \
-       $filter \
+       ${FINAL_FILTER:-$FTONE} \
        -rotate "$rot" \
        -units PixelsPerInch -density 300 \
        -quality 90 "clean_${base}.jpg"
@@ -417,9 +433,12 @@ scanimage -d fujitsu \
 
 if [ "$CLEAN_MODE" = "--clean" ]; then
   FILTER='\( +clone -blur 0x25 \) -compose divide -composite -level 5%,95%'
+  # --clean uses the same aggressive flattening for the final encode.
+  export FINAL_FILTER="$FILTER"
 else
-  # ScanSnap-matching tone: brightens paper whites (suppresses
-  # bleedthrough), mild contrast/saturation boost, light sharpen.
+  # Orientation-scoring tone (NOT the output tone — the worker's
+  # FTONE handles final encodes; this one must stay byte-stable or
+  # rotation votes shift).
   FILTER='-level 3%,88% -unsharp 0x1+0.6+0.02'
 fi
 

@@ -234,6 +234,38 @@ patches; ScanSnap suppresses these to white.
   `--no-whiten` / `--whiten` / SCAN_NORM=off|on exist as emergency
   overrides only — the user should never need them.
 
+## Tone calibration vs ScanSnap (2026-07-23)
+User: our colors "way more intense" than SS and the physical check.
+Cause: `-level 3%,88%` stretches RGB channels independently —
+brightening multiplies channel DIFFERENCES, i.e. amplifies chroma
+(Pawtucket B-R 39 raw -> 46; measured overall: our body colors 15-30
+darker and 1.5-1.9x the channel spread of SS's).
+Fix: final-encode tone (worker FTONE) brightens on the LAB L channel
+only, with the mid-lift from GAMMA, not white-point: `-colorspace
+LAB -channel R -level 3%,90%,1.75 +channel -colorspace sRGB
+-modulate 100,82 -unsharp 0x1+0.6+0.02`.
+LESSON (cost one round-trip): first calibration used a hard white
+point at L=80% — matched SS's body MEANS but CLIPPED everything
+paler: Walton/Wilmington stock washed out, back security print
+illegible (user-caught). Detail retention must be a measured target
+alongside the mean: tonecal prints central-50% std; the clip showed
+as Pawtucket-back std 3.6 vs ~7-16 preserved. Soft-shouldered gamma
+(1.75 @ white 90%) gets means within ~6 of SS AND keeps the std.
+Calibrated data-driven (debug.sh sscmp/tonecal vs SS ref PDF
+~/Documents/2025-Scans/scansnap-checks-2026-07-22.pdf; candidates
+applied to crop_raw_*.png from a DEBUG checksrun; SS rasterized at
+300dpi for std comparability — SS's own std runs ~half ours, use
+relative not absolute). Residuals ~≤9 (Pawtucket G): single global
+curve can't zero per-paper response; IT8/ICC declined as rathole.
+ARCHITECTURE: orientation-scoring image keeps the OLD tone
+(`-level 3%,88%`) via $FILTER — votes are calibrated to those exact
+pixels; FINAL_FILTER env overrides FTONE (main sets it for --clean).
+sscmp's lum column is buggy; HSL sat unstable near white — compare
+mean RGB + std only. Gate decisions and votes verified unchanged
+(28 checks off / 6 docs on); s4-fixed-v4.pdf rebuilt with final
+tone (v3, user-approved, was the clipping F variant — docs are
+near-white so the difference there is minimal).
+
 ## Version history of attempts (what NOT to revisit)
 - v1 (blur/divide/level): bleached colors; sideways backs.
 - v1-fix (ocrmypdf --rotate-pages thr 2): rotation misfires.
