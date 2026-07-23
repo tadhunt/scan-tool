@@ -64,7 +64,17 @@ saved corpus raws. Remaining known deviations, judged acceptable:
       blue-border bug, found 2026-07-22). Head calibration is stable
       within ~2 units across every batch measured; keying fuzz absorbs
       the drift.
-   b. `magick -background rgb($bg) -deskew 40% +repage -shave 10x10`.
+   b. `magick -background rgb($bg) -deskew 40% +repage -shave 10x10` —
+      BUT only if the page has ≥0.2% dark pixels (50% gray threshold).
+      -deskew needs dark features; on a featureless blank duplex back
+      (fold creases don't survive the threshold) it latches onto noise
+      and rotated a STRAIGHT page ~5° (s3.pdf p2). Featureless pages
+      instead use their duplex sibling's angle NEGATED (same physical
+      sheet; corpus pairs agree to ~0.15°; `-rotate <angle>` verified
+      == -deskew at RMSE 0.007), or 0° if the sibling is also
+      featureless. |sibling angle|>3° → 0 (ADF can't skew that much).
+      Every corpus page is ≥0.46% dark → all stay on the bit-exact
+      -deskew path.
    c. Paper location via row/column profiles (profile_bounds in scan.sh):
       two profiles per axis from one keyed image — non-bg fraction
       (fuzz 6% off measured bg) and masked luminance (bg painted black;
@@ -166,20 +176,55 @@ frames; everything above was tuned against them without rescanning.
 4. Optionally test `--clean` mode + a mixed-document batch (letters,
    receipts) — all tuning so far is on the check corpus.
 
-## Open issue: bleed-through blue tint (s.pdf p3 "JUDGE" blob, p4 wash)
+## Bleed-through / paper-gray suppression (s.pdf → s3.pdf saga)
 The blue-gray plate shows through thin/creased paper as pale blue
-patches; ScanSnap suppresses these to white. TRIED AND REVERTED
-(2026-07-22): whitening a tube along the bg→white mixing line
-(t*bg+(1-t)*white, 12-unit stops, 4% fuzz) in the final encode. Corpus
-metrics looked clean (check saturation preserved, no holes in
-Worcester) but the user judged real text-doc output "a lot worse" —
-plausibly hard tube edges turning smooth bleed-through gradients into
-blotchy white islands with visible boundaries, i.e. worse than the
-uniform tint. Lesson: binary opaque-matching is the wrong tool for a
-continuous gradient; any future attempt should be a SMOOTH operation
-(e.g. hue-selective desaturation with soft falloff, or --clean-style
-blur/divide flattening) and must be validated on a real thin-paper
-text doc, not just the check corpus.
+patches; ScanSnap suppresses these to white.
+- TRIED AND REVERTED (2026-07-22): whitening a tube along the
+  bg→white mixing line (12-unit -opaque stops, 4% fuzz). Corpus
+  metrics looked clean but real text-doc output was "a lot worse" —
+  hard opaque edges turn smooth gradients into blotchy white islands.
+  Binary matching is the wrong tool for a continuous gradient.
+- CURRENT (step 2f in scan.sh): paper-white NORMALIZATION, smooth by
+  construction: measure the crop's dominant bright color (mode of
+  25%-scaled, depth-5-quantized histogram, lum ≥ bglum+8) = the paper,
+  pull it to white with per-channel `-level 0%,P%`. Erases paper tint
+  AND most bleed-through (both live along the paper-color axis).
+  Forced-on test vs plain on s4 p3: bleed-through goes from "read the
+  handwriting" to essentially gone.
+- GATE HISTORY — the part that went in circles; do not repeat:
+  saturation gating CANNOT work. HSL saturation explodes near white:
+  optical-brightener paper (s4 doc, raw mode rgb(215,223,243) — the
+  paper itself scans strongly BLUE, B-R=+28) measures 36-58% "sat",
+  far above any workable threshold, so the s4 run normalized NOTHING
+  and shipped the blue mess. Colored-check bodies overlap the same
+  range. Current gate = MODE DOMINANCE (raw domain, on the crop):
+  fraction of crop pixels in the single largest 8-unit bright bucket.
+  FINAL GATE (after several failed attempts — history below): whiten
+  only what the scanner provably tinted. Auto per page, both required:
+  (1) dom>=40: share of crop pixels within 12 units of the dominant
+  bright color — uniform paper 61-84%, patterned check fronts <=38.5
+  except near-solid Wilmington 56.3 (caught by 2);
+  (2) artifact-strength blue: B-R>=20 AND B-G>=12 of the paper mode —
+  brightener fluorescence measured B-R 24.6-32.9 / B-G 16.4-24.7;
+  every corpus check fails (pale-blue Wilmington B-R 16.5, teal
+  Peachtree B-R 41 but B-G 8.2), warm stock negative, neutral white
+  paper fails (nothing to remove — stays untouched, tone level
+  already brightens it).
+  Every check fails BOTH signals except Wilmington (fails 2 only)
+  and Peachtree (fails both narrowly: dom 38.5, B-G 8.2).
+  USER REQUIREMENTS (hard): no flags in normal use — mixed batches
+  (sizes, colors, checks together) must auto-work like ScanSnap;
+  real paper colors (pink/yellow/cream/check stock) must survive.
+  Verified: corpus all-off = bit-identical to validated v7 (votes,
+  bodysat stable); s4 all-on, user-rated "even better than scansnap".
+  FAILED GATES (do not retry): HSL saturation (explodes near white
+  — shipped the s4 blue mess by gating OFF the pages needing help);
+  single-bucket dominance (thin 10.7/15/17.2 margins, noise-fragile);
+  12-unit-neighborhood dominance alone (Wilmington 56.3 would
+  bleach); texture/high-pass energy (text-edge halos on dense doc
+  pages overlap engraved-pattern energy: 7.04 vs 5.40).
+  `--no-whiten` / `--whiten` / SCAN_NORM=off|on exist as emergency
+  overrides only — the user should never need them.
 
 ## Version history of attempts (what NOT to revisit)
 - v1 (blur/divide/level): bleached colors; sideways backs.

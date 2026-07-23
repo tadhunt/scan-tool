@@ -1,9 +1,18 @@
 #!/bin/bash
 set -e
 
-# Usage: scan.sh [output.pdf] [--clean]
-#   --clean  enables background flattening (good for B&W text docs,
-#            BAD for checks/color docs — it bleaches the paper tint)
+# Usage: scan.sh [output.pdf] [--clean] [--no-whiten|--whiten]
+#   Everything always scans in full color. The whiten step only
+#   decides whether the PAPER BACKGROUND TINT is normalized to white.
+#   Default (auto): whiten a page only when its paper is uniform
+#   (dominance gate — check patterns never qualify) AND blue-or-
+#   neutral tinted (scanner lamp/optical brightener cast is always
+#   blue; warm tints = real pink/yellow/cream stock, preserved).
+#   --no-whiten  never whiten paper (exact paper color fidelity)
+#   --whiten     always whiten paper (known white-paper batch)
+#   --clean      blur/divide background flattening (B&W text only,
+#                bleaches everything — predates --whiten, rarely
+#                needed now)
 #
 # Env vars:
 #   DEBUG=1        keep the temp dir (raw_*.pnm etc.) for inspection
@@ -137,8 +146,39 @@ process_page() {
   #    artifact rim. (Shave 10 is tuned: reducing it to recover more
   #    of full-bleed pages shifted content enough to flip the p2
   #    rotation vote and misfire p13's top trim — not worth ~0.5mm.)
-  magick "$img" -background "rgb($bg)" -deskew 40% +repage \
-         -shave 10x10 "stage_${base}.png"
+  #    -deskew's angle estimate needs dark features; on a featureless
+  #    page (blank duplex back — fold creases don't survive the 50%
+  #    threshold) it latches onto noise and can rotate a straight
+  #    page by several degrees (s3.pdf p2). A duplex back shares its
+  #    sheet with its front, so its true angle is the front's angle
+  #    NEGATED (verified on corpus pairs to ~0.15°; -rotate with the
+  #    deskew-reported angle reproduces -deskew to RMSE 0.007).
+  #    Trust the page's own estimate only if ≥0.2% of its pixels are
+  #    dark (every corpus page is ≥0.46%); else mirror a trustworthy
+  #    sibling; else leave unrotated.
+  local darkfrac angle sibnum sib sibfrac
+  darkfrac=$(magick "$img" -shave 6x6 -colorspace gray -threshold 50% \
+               -format '%[fx:1-mean]' info:)
+  if awk -v d="$darkfrac" 'BEGIN{exit !(d>=0.002)}'; then
+    magick "$img" -background "rgb($bg)" -deskew 40% +repage \
+           -shave 10x10 "stage_${base}.png"
+  else
+    if [ $((10#$num % 2)) -eq 1 ]; then sibnum=$((10#$num+1)); else sibnum=$((10#$num-1)); fi
+    sib="${base%_*}_$(printf '%03d' "$sibnum").pnm"
+    angle=0
+    if [ -e "$sib" ]; then
+      sibfrac=$(magick "$sib" -shave 6x6 -colorspace gray -threshold 50% \
+                  -format '%[fx:1-mean]' info:)
+      if awk -v d="$sibfrac" 'BEGIN{exit !(d>=0.002)}'; then
+        angle=$(magick "$sib" -deskew 40% -format '%[deskew:angle]' info: | \
+                awk '{a=-$1; if(a>3||a<-3)a=0; printf "%.4f", a}')
+      fi
+    fi
+    [ -n "$DEBUG" ] && \
+      echo "DEBUG ${base}: featureless (dark $darkfrac) -> sibling-mirror angle $angle" >&2
+    magick "$img" -background "rgb($bg)" -rotate "$angle" +repage \
+           -shave 10x10 "stage_${base}.png"
+  fi
 
   local W H
   read -r W H <<< "$(magick identify -format '%w %h' "stage_${base}.png")"
@@ -232,12 +272,68 @@ process_page() {
   #    of the bg, well inside the palest corpus paper at ~7%).
   #    Whitening runs in the raw color domain, i.e. before $filter.
   #    (Whitening the whole bg→white mixing line to kill bleed-through
-  #    was tried and REVERTED: it made real pages much worse — see
-  #    HANDOFF.)
+  #    was tried and REVERTED: hard opaque edges on a smooth gradient
+  #    made real pages much worse — see HANDOFF.)
+  #    Additionally, WHITE-PAPER pages get paper-white normalization:
+  #    find the dominant bright color (the paper — includes optical-
+  #    brightener blue tints, which scan strongly blue) and pull it to
+  #    white with a smooth per-channel -level. Erases paper tint AND
+  #    most bleed-through (both live along the paper-color axis), like
+  #    ScanSnap. Gate = MODE DOMINANCE, not saturation (HSL saturation
+  #    explodes near white — it can't tell tinted paper from colored
+  #    checks; that bug shipped the s4.pdf blue mess): uniform paper
+  #    puts ≥~21% of crop pixels in one 8-unit color bucket, check
+  #    front patterns ≤~12%. Threshold 15%. SCAN_NORM=off|on overrides
+  #    (--color / --white flags).
+  # dom = share of crop pixels within 12 units (per channel) of the
+  # dominant bright color — the mode's whole neighborhood, not one
+  # quantization bucket, so uniform paper isn't split by noise.
+  local dom PR PG PB paper="" norm=""
+  read -r dom PR PG PB <<< "$(magick "stage_${base}.png" \
+        -crop "${CW}x${CH}+${x0}+${y0}" +repage -scale 25% -depth 5 \
+        -format %c histogram:info: | \
+      awk -F'[(,)]' -v minl=$((bglum+8)) \
+        '{c[NR]=$1+0; tot+=c[NR]; r[NR]=$2+0; g[NR]=$3+0; b[NR]=$4+0
+          l=.299*r[NR]+.587*g[NR]+.114*b[NR]
+          if(l>=minl && c[NR]>best){best=c[NR]; m=NR}}
+         END{if(!m){print "0 0 0 0"; exit}
+             for(i=1;i<=NR;i++){
+               dr=r[i]-r[m]; if(dr<0)dr=-dr
+               dg=g[i]-g[m]; if(dg<0)dg=-dg
+               db=b[i]-b[m]; if(db<0)db=-db
+               if(dr<=12 && dg<=12 && db<=12) near+=c[i]}
+             printf "%.1f %.1f %.1f %.1f", near*100/tot, r[m], g[m], b[m]}')"
+  # Auto mode: whiten ONLY what the scanner itself provably tinted.
+  # Two per-page conditions, both required:
+  #   1. uniform paper: dom >= 40 (patterned check fronts reach 25.5
+  #      at most — except Wilmington's near-solid stock, caught by 2);
+  #   2. artifact-strength blue cast: B-R >= 20 AND B-G >= 12. Optical
+  #      brightener fluorescence is STRONG and blue-not-teal (measured
+  #      docs B-R 24.6-32.9, B-G 16.4-24.7); every corpus check fails
+  #      at least one (pale-blue Wilmington B-R 16.5; teal Peachtree
+  #      B-R 41 but B-G 8.2), warm stock (pink/yellow/cream) is
+  #      negative, and neutral white paper fails too — no artifact,
+  #      nothing to remove. (Texture gating was tried and dropped:
+  #      text-edge halos on dense doc pages overlap engraved-pattern
+  #      energy.)
+  # Both signals are per-page; mixed batches need no flags.
+  case "${SCAN_NORM:-auto}" in
+    on)   paper=1;;
+    off)  paper="";;
+    *)    awk -v d="$dom" -v r="$PR" -v g="$PG" -v b="$PB" \
+            'BEGIN{exit !(d>=40 && r>0 && b-r>=20 && b-g>=12)}' && paper=1;;
+  esac
+  [ -n "$paper" ] && [ "$PR" != "0" ] && norm=$(awk -v r="$PR" -v g="$PG" -v b="$PB" 'BEGIN{
+      printf "-channel R -level 0%%,%.1f%% +channel", r/2.55
+      printf " -channel G -level 0%%,%.1f%% +channel", g/2.55
+      printf " -channel B -level 0%%,%.1f%% +channel", b/2.55}')
+  [ -n "$DEBUG" ] && \
+    echo "DEBUG ${base}: dom $dom paper $PR,$PG,$PB norm $([ -n "$norm" ] && echo on || echo off)" >&2
   local bgcolor="rgb($bg)"
   eval magick \"stage_${base}.png\" \
        -crop "${CW}x${CH}+${x0}+${y0}" +repage -shave 4x4 \
        -fuzz 4% -fill white -opaque \"\$bgcolor\" \
+       $norm \
        -colorspace sRGB \
        $filter \
        -rotate "$rot" \
@@ -254,7 +350,18 @@ fi
 # ----------------------------------------------------------------------
 
 OUTPUT_PDF="${1:-scanned_doc.pdf}"
-CLEAN_MODE="${2:-}"
+CLEAN_MODE=""
+SCAN_NORM="${SCAN_NORM:-auto}"
+shift $(($# > 0 ? 1 : 0))
+for arg in "$@"; do
+  case "$arg" in
+    --clean) CLEAN_MODE="--clean";;
+    --no-whiten) SCAN_NORM=off;;  # never normalize paper tint to white
+    --whiten)    SCAN_NORM=on;;   # always normalize paper tint to white
+    *) echo "unknown option: $arg" >&2; exit 1;;
+  esac
+done
+export SCAN_NORM
 
 # Absolute paths BEFORE cd'ing into the temp dir: the output (so it
 # isn't written into — and deleted with — the temp dir), and this
