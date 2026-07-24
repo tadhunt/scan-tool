@@ -6,6 +6,13 @@ Replace ScanSnap Manager (dies with macOS Tahoe upgrade) with a shell pipeline
 deskew, crop-to-paper, per-page orientation, OCR. Test corpus: 7 checks,
 duplex, 14 pages. Reference output: `scansnap-checks-2026-07-22_pdf.pdf`.
 
+## Status (2026-07-23): VALIDATED — user judges output "at least as
+## good as or better than scansnap" across all three document classes:
+## checks (checks-v7-fixed.pdf), brightener-blue text docs
+## (s4-fixed-v4.pdf), and colored/yellow stock (kearny.pdf vs
+## ~/Documents/2026-Scans/scansnap-kearny.pdf — auto-gate correctly
+## declined whitening, warm paper preserved, no flags).
+
 ## Status (2026-07-22, v7): WORKING
 All 14 corpus pages crop cleanly (no bg strips, no shadow bands, dark and
 pale checks both intact), duplex pairs agree within ~13px, orientation is
